@@ -140,34 +140,62 @@ def test_create_post_unauthenticated():
     assert response.status_code == 401 # HTTP 401 Unauthorized
     assert response.json()["detail"] == "Not authenticated" # Or your specific message
 
-def test_get_all_posts_empty():
-    # This test remains largely the same as GET /posts is public
-    response = client.get("/posts")
-    assert response.status_code == 200
-    assert response.json() == []
-
-def test_get_post():
-    # To test GET /posts/{id}, we first need to create a post. Creating a post now requires auth.
+# Renamed to reflect it's now an authenticated endpoint
+def test_get_all_posts_empty_authenticated(): 
     token = get_auth_token()
     assert token is not None, "Failed to get auth token for test"
     headers = {"Authorization": f"Bearer {token}"}
-    post_data = {"title": "Get Me", "content": "Content to get"}
+    response = client.get("/posts", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == []
+
+def test_get_all_posts_unauthenticated():
+    response = client.get("/posts") # No headers
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Not authenticated"
+
+# Renamed to reflect it's now an authenticated endpoint for the GET part too
+def test_get_post_authenticated(): 
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # 1. Create a post (already requires auth, headers are used)
+    post_data = {"title": "Get Me Authenticated", "content": "Content to get with auth"}
     create_response = client.post("/posts", json=post_data, headers=headers)
     assert create_response.status_code == 201
     created_post_id = create_response.json()["id"]
 
-    # Now test the public GET endpoint for this specific post
-    response = client.get(f"/posts/{created_post_id}")
+    # 2. Test the GET endpoint for this specific post, now requiring auth
+    response = client.get(f"/posts/{created_post_id}", headers=headers)
     assert response.status_code == 200
     data = response.json()
     assert data["title"] == post_data["title"]
     assert data["content"] == post_data["content"]
     assert data["id"] == created_post_id
 
-def test_get_post_not_found():
-    # This test remains the same as GET /posts/{id} is public
-    response = client.get("/posts/99999") # Use a high number to avoid collision
-    assert response.status_code == 404
+def test_get_specific_post_unauthenticated():
+    # 1. Create a post first (needs auth to create)
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
+    post_data = {"title": "For Unauth Get", "content": "Content"}
+    create_response = client.post("/posts", json=post_data, headers=headers)
+    assert create_response.status_code == 201
+    created_post_id = create_response.json()["id"]
+
+    # 2. Attempt to GET the post without auth
+    response = client.get(f"/posts/{created_post_id}") # No headers
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Not authenticated"
+
+# Renamed to reflect it's now an authenticated endpoint
+def test_get_post_not_found_authenticated(): 
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.get("/posts/99999", headers=headers) # Use a high number
+    assert response.status_code == 404 # Post not found, even if authenticated
     assert response.json() == {"detail": "Post not found"}
 
 def test_update_post_authenticated():
