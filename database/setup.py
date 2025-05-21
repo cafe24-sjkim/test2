@@ -10,6 +10,14 @@ def create_db_and_tables():
             content TEXT NOT NULL
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            hashed_password TEXT NOT NULL,
+            is_active BOOLEAN DEFAULT TRUE
+        )
+    ''')
     conn.commit()
     conn.close()
 

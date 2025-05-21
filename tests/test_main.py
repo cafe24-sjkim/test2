@@ -19,13 +19,18 @@ client = TestClient(app)
 # This is important if tests are run independently and the main app startup isn't triggered.
 create_db_and_tables()
 
-# Helper function to clear posts table for test isolation if needed
-def clear_posts_table():
+# Helper function to clear tables for test isolation
+def clear_all_tables():
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM posts")
+    cursor.execute("DELETE FROM users") # Also clear users table
     conn.commit()
     conn.close()
+
+# Global variable to store test user credentials and token
+test_user_data = {"username": "testuser@example.com", "password": "testpassword"}
+auth_token = None
 
 # Basic test to ensure the test setup is working
 def test_read_root():
@@ -33,42 +38,125 @@ def test_read_root():
     assert response.status_code == 200
     assert response.json() == {"message": "Hello World, API is running!"}
 
-# Placeholder for tests
-# Test functions will be added below this line
-# Note: For simplicity in this exercise, tests will interact with the same 'posts.db'.
-# In a real-world scenario, you'd use a separate test database or more sophisticated cleanup.
-# We'll add a fixture to clear the table before each test.
-
 @pytest.fixture(autouse=True)
 def run_before_and_after_tests():
-    """Fixture to execute setup and cleanup"""
-    clear_posts_table()
+    """Fixture to execute setup and cleanup for all tests"""
+    clear_all_tables()
+    global auth_token # Ensure auth_token is reset for each test scenario
+    auth_token = None 
     yield # this is where the testing happens
-    # clear_posts_table() # Optional: clear after each test if not handled by next test's setup
 
-# Test functions will follow here
-def test_create_post():
-    response = client.post("/posts", json={"title": "Test Post", "content": "Test Content"})
+# Helper function to get an auth token
+def get_auth_token(username_override=None, password_override=None):
+    global auth_token
+    # if auth_token: # Caching token can cause issues if tests modify user state
+    #     return auth_token
+
+    # 1. Ensure user exists (or create one)
+    signup_data = {
+        "username": username_override or test_user_data["username"],
+        "password": password_override or test_user_data["password"]
+    }
+    # Try to sign up, ignore if user already exists (400)
+    client.post("/users/signup", json=signup_data) 
+
+    # 2. Log in to get token
+    login_data = {
+        "username": username_override or test_user_data["username"],
+        "password": password_override or test_user_data["password"]
+    }
+    response = client.post("/token", data=login_data) # x-www-form-urlencoded
+    if response.status_code == 200:
+        auth_token = response.json()["access_token"]
+        return auth_token
+    else:
+        # This will cause tests relying on this function to fail, which is intended
+        # if login itself is failing.
+        print(f"Failed to get token: {response.status_code} {response.text}")
+        return None
+
+
+# --- User Authentication Tests ---
+
+def test_user_signup():
+    response = client.post("/users/signup", json=test_user_data)
+    assert response.status_code == 201 # HTTP 201 Created
+    data = response.json()
+    assert data["username"] == test_user_data["username"]
+    assert "id" in data
+    assert data["is_active"] is True # Default value
+
+    # Test duplicate username
+    response_duplicate = client.post("/users/signup", json=test_user_data)
+    assert response_duplicate.status_code == 400 # HTTP 400 Bad Request
+    assert response_duplicate.json()["detail"] == "Username already registered"
+
+def test_user_login_and_get_token():
+    # 1. Create user first
+    client.post("/users/signup", json=test_user_data) # Ensure user exists
+
+    # 2. Test successful login
+    login_payload = {"username": test_user_data["username"], "password": test_user_data["password"]}
+    response = client.post("/token", data=login_payload) # x-www-form-urlencoded
+    assert response.status_code == 200
+    data = response.json()
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
+    
+    # Store token for other tests if needed (though get_auth_token is preferred)
+    global auth_token
+    auth_token = data["access_token"]
+
+    # 3. Test login with incorrect password
+    login_payload_wrong_pass = {"username": test_user_data["username"], "password": "wrongpassword"}
+    response_wrong_pass = client.post("/token", data=login_payload_wrong_pass)
+    assert response_wrong_pass.status_code == 401
+    assert response_wrong_pass.json()["detail"] == "Incorrect username or password"
+
+    # 4. Test login with non-existent username
+    login_payload_non_existent_user = {"username": "nouser@example.com", "password": "somepassword"}
+    response_non_existent_user = client.post("/token", data=login_payload_non_existent_user)
+    assert response_non_existent_user.status_code == 401
+    assert response_non_existent_user.json()["detail"] == "Incorrect username or password"
+
+
+# --- Post API Tests (with Authentication) ---
+
+def test_create_post_authenticated():
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
+    post_payload = {"title": "Authenticated Post", "content": "Content created with auth"}
+    response = client.post("/posts", json=post_payload, headers=headers)
     assert response.status_code == 201
     data = response.json()
-    assert data["title"] == "Test Post"
-    assert data["content"] == "Test Content"
+    assert data["title"] == post_payload["title"]
+    assert data["content"] == post_payload["content"]
     assert "id" in data
 
+def test_create_post_unauthenticated():
+    post_payload = {"title": "Unauthenticated Post", "content": "Should fail"}
+    response = client.post("/posts", json=post_payload) # No headers
+    assert response.status_code == 401 # HTTP 401 Unauthorized
+    assert response.json()["detail"] == "Not authenticated" # Or your specific message
+
 def test_get_all_posts_empty():
-    # The @pytest.fixture(autouse=True) run_before_and_after_tests clears the table
+    # This test remains largely the same as GET /posts is public
     response = client.get("/posts")
     assert response.status_code == 200
     assert response.json() == []
 
 def test_get_post():
-    # Create a post first
+    # To test GET /posts/{id}, we first need to create a post. Creating a post now requires auth.
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
     post_data = {"title": "Get Me", "content": "Content to get"}
-    create_response = client.post("/posts", json=post_data)
+    create_response = client.post("/posts", json=post_data, headers=headers)
     assert create_response.status_code == 201
     created_post_id = create_response.json()["id"]
 
-    # Send a GET request to /posts/{post_id}
+    # Now test the public GET endpoint for this specific post
     response = client.get(f"/posts/{created_post_id}")
     assert response.status_code == 200
     data = response.json()
@@ -77,50 +165,105 @@ def test_get_post():
     assert data["id"] == created_post_id
 
 def test_get_post_not_found():
+    # This test remains the same as GET /posts/{id} is public
     response = client.get("/posts/99999") # Use a high number to avoid collision
     assert response.status_code == 404
     assert response.json() == {"detail": "Post not found"}
 
-def test_update_post():
-    # Create a post first
-    post_data = {"title": "Original Title", "content": "Original Content"}
-    create_response = client.post("/posts", json=post_data)
+def test_update_post_authenticated():
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # 1. Create a post first
+    original_post_data = {"title": "Original Title", "content": "Original Content"}
+    create_response = client.post("/posts", json=original_post_data, headers=headers)
     assert create_response.status_code == 201
     created_post_id = create_response.json()["id"]
 
-    # Data for updating the post
+    # 2. Update the post
     update_data = {"title": "Updated Title", "content": "Updated Content"}
-    response = client.put(f"/posts/{created_post_id}", json=update_data)
+    response = client.put(f"/posts/{created_post_id}", json=update_data, headers=headers)
     assert response.status_code == 200
     data = response.json()
     assert data["title"] == update_data["title"]
     assert data["content"] == update_data["content"]
     assert data["id"] == created_post_id
 
-def test_update_post_not_found():
-    update_data = {"title": "Non Existent", "content": "Update Content"}
-    response = client.put("/posts/99999", json=update_data) # Use a high number
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Post not found"}
-
-def test_delete_post():
-    # Create a post first
-    post_data = {"title": "To Be Deleted", "content": "Delete this content"}
-    create_response = client.post("/posts", json=post_data)
+def test_update_post_unauthenticated():
+    # 1. Create a post first (needs auth to create)
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
+    original_post_data = {"title": "Original for Unauth Update", "content": "Content"}
+    create_response = client.post("/posts", json=original_post_data, headers=headers)
     assert create_response.status_code == 201
     created_post_id = create_response.json()["id"]
 
-    # Send a DELETE request
-    delete_response = client.delete(f"/posts/{created_post_id}")
+    # 2. Attempt to update without auth
+    update_data = {"title": "Updated Title Unauth", "content": "Updated Content Unauth"}
+    response = client.put(f"/posts/{created_post_id}", json=update_data) # No headers
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Not authenticated"
+
+def test_update_post_not_found_authenticated(): # Renamed for clarity
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
+    update_data = {"title": "Non Existent", "content": "Update Content"}
+    response = client.put("/posts/99999", json=update_data, headers=headers) # Use a high number
+    assert response.status_code == 404 # Post not found, even if authenticated
+    assert response.json() == {"detail": "Post not found"}
+
+
+def test_delete_post_authenticated():
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 1. Create a post first
+    post_data = {"title": "To Be Deleted", "content": "Delete this content"}
+    create_response = client.post("/posts", json=post_data, headers=headers)
+    assert create_response.status_code == 201
+    created_post_id = create_response.json()["id"]
+
+    # 2. Send an authenticated DELETE request
+    delete_response = client.delete(f"/posts/{created_post_id}", headers=headers)
     assert delete_response.status_code == 204
 
-    # Verify the post is deleted by trying to GET it
+    # 3. Verify the post is deleted by trying to GET it (public endpoint)
     get_response = client.get(f"/posts/{created_post_id}")
     assert get_response.status_code == 404
 
-def test_delete_post_not_found():
-    response = client.delete("/posts/99999") # Use a high number
-    assert response.status_code == 404
+def test_delete_post_unauthenticated():
+    # 1. Create a post first (needs auth)
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
+    post_data = {"title": "To Be Deleted Unauth", "content": "Content"}
+    create_response = client.post("/posts", json=post_data, headers=headers)
+    assert create_response.status_code == 201
+    created_post_id = create_response.json()["id"]
+
+    # 2. Attempt to delete without auth
+    delete_response = client.delete(f"/posts/{created_post_id}") # No headers
+    assert delete_response.status_code == 401
+    assert delete_response.json()["detail"] == "Not authenticated"
+
+
+def test_delete_post_not_found_authenticated(): # Renamed for clarity
+    token = get_auth_token()
+    assert token is not None, "Failed to get auth token for test"
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.delete("/posts/99999", headers=headers) # Use a high number
+    assert response.status_code == 404 # Post not found, even if authenticated
     assert response.json() == {"detail": "Post not found"}
 
 # End of test functions
+# Note: `test_update_post_not_found` and `test_delete_post_not_found` were renamed
+# to `_authenticated` to clarify they test the "not found" aspect while still being authenticated.
+# The unauthenticated versions for these "not found" scenarios would also result in 401
+# if the path itself was protected, or 404 if path is public but item not found.
+# For PUT/DELETE /posts/{id}, the path itself requires auth, so 401 takes precedence over 404
+# if no token or invalid token is provided.
+# If a valid token is provided but for a non-existent post_id, then 404 is correct.
