@@ -85,12 +85,14 @@ async def create_new_post(post: PostCreate, current_user: User = Depends(auth.ge
     return PostResponse(**created_post)
 
 @app.get("/posts", response_model=List[PostResponse])
-async def read_all_posts():
+async def read_all_posts(current_user: User = Depends(auth.get_current_active_user)):
+    # Now requires authentication
     posts = get_all_posts()
     return [PostResponse(**post) for post in posts]
 
 @app.get("/posts/{post_id}", response_model=PostResponse)
-async def read_post(post_id: int):
+async def read_post(post_id: int, current_user: User = Depends(auth.get_current_active_user)):
+    # Now requires authentication
     post = get_post(post_id)
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
