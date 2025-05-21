@@ -1,5 +1,6 @@
 import sqlite3
 from typing import Optional, List, Dict, Any
+from models.user import UserCreate, UserInDB # Added UserCreate and UserInDB
 
 DATABASE_URL = "posts.db"
 
@@ -74,3 +75,42 @@ def delete_post(post_id: int) -> bool:
     deleted_rows = cursor.rowcount
     conn.close()
     return deleted_rows > 0
+
+# --- User related database functions ---
+
+def get_user_by_username(username: str) -> Optional[UserInDB]: # Forward declaration for create_user
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, hashed_password, is_active FROM users WHERE username = ?", (username,))
+    user_row = cursor.fetchone()
+    conn.close()
+    if user_row:
+        return UserInDB(**dict(user_row))
+    return None
+
+def create_user(user: UserCreate, hashed_password: str) -> Optional[UserInDB]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO users (username, hashed_password) VALUES (?, ?)",
+            (user.username, hashed_password)
+        )
+        conn.commit()
+        # Fetch the user back to get ID and defaults like is_active
+        created_user = get_user_by_username(user.username)
+        return created_user
+    except sqlite3.IntegrityError: # Username already exists
+        return None
+    finally:
+        conn.close()
+
+def get_user(user_id: int) -> Optional[UserInDB]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, hashed_password, is_active FROM users WHERE id = ?", (user_id,))
+    user_row = cursor.fetchone()
+    conn.close()
+    if user_row:
+        return UserInDB(**dict(user_row))
+    return None
